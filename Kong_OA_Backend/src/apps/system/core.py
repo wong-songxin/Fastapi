@@ -1,0 +1,64 @@
+from datetime import timedelta
+from datetime import datetime
+from src.settings import setting
+from jose import jwt
+from .models import UserInfo
+from fastapi.requests import Request
+from src.utils.common_exception import AuthException
+from fastapi import Depends
+# 1 根据用户签发token的函数
+def create_access_token(data:dict,expires_delta:timedelta=None):
+    # 1 复制一份data的数据： 用户名，用户相关信息
+    to_encode=data.copy()
+    if expires_delta:
+        expire=datetime.utcnow()+expires_delta
+    else:
+        # 如果没传，用配置文件默认
+        expire=datetime.utcnow()+timedelta(setting.ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    to_encode.update({'exp':expire})
+    encoded_jwt=jwt.encode(to_encode,setting.SECRET_KEY,algorithm=setting.ALGORITHM)
+    return encoded_jwt
+
+# 2 根据用户名密码查用户的方法--->内部要异步查数据库，所以是async的
+async def authenticate_user(username:str,password:str):
+    # 先根据用户名查到用户
+    user:UserInfo= await UserInfo.get_or_none(username=username)
+    # 再校验密码
+    if not user: # 用户不存在
+        return False
+    if not user.check_password(password):
+        return False
+    # 判断用户是活跃的
+    if user.is_active:
+        return user # 查到了，密码也对
+    else:
+        return False
+
+# 3 认证 ：依赖注入---》所有需要登录才才能访问的接口，必须先执行这个--》drf--》认证类
+from fastapi.security import OAuth2PasswordBearer # 要求前端请求头中带:Authorization :Bearer token三段式
+oauth2=OAuth2PasswordBearer(tokenUrl='token')
+async def oauth2_scheme(request:Request):
+    try:
+        token=await oauth2(request)
+        return token
+    except Exception as e:
+        raise AuthException(msg='您必须携带token')
+
+# 4 获取当前登录用户--》使用用户携带的token来拿到
+async def get_current_user(token:str=Depends(oauth2_scheme)):
+# 自己获取token
+# async def get_current_user(request:Request):
+#     token=request.headers.get('WWW-Authorization').split(' ')[-1]
+    e=AuthException(msg='token验证失败')
+    try:
+        payload = jwt.decode(token, setting.SECRET_KEY, algorithms=[setting.ALGORITHM])
+        username: str = payload.get("username")
+        if username is None:
+            raise e # 从荷载中拿不出用户名，说明验证失败
+        # 根据用户名拿到当前登录用户
+        user = await UserInfo.get_or_none(username=username)
+    except Exception:
+        raise e
+
+    return user
